@@ -4,7 +4,6 @@ from PIL import Image
 
 from comfy import model_management as mm
 
-# SAM3 imports – make sure your transformers version supports these
 from transformers import (
     Sam3VideoModel,
     Sam3VideoProcessor,
@@ -45,10 +44,7 @@ def get_sam3_tracker(device):
 
 
 def to_pil_frames(images_tensor: torch.Tensor):
-    """
-    Convert ComfyUI IMAGE batch [B,H,W,C] in 0–1 to a list of PIL.Image.
-    """
-    # [B,H,W,C], float32 0–1
+    """Convert ComfyUI IMAGE batch [B,H,W,C] in 0–1 to list[PIL.Image]."""
     imgs = images_tensor.detach().cpu().numpy()
     imgs = (imgs * 255.0).clip(0, 255).astype("uint8")
     frames = [Image.fromarray(imgs[i]) for i in range(imgs.shape[0])]
@@ -56,14 +52,7 @@ def to_pil_frames(images_tensor: torch.Tensor):
 
 
 def binary_mask_tensor(masks_np, height: int, width: int):
-    """
-    Convert numpy mask(s) from SAM3 into a [1,H,W] float tensor in 0–1.
-
-    masks_np:
-      - None
-      - [H,W]
-      - [N,H,W] (we union N masks)
-    """
+    """Convert numpy mask(s) from SAM3 into [1,H,W] float tensor in 0–1."""
     if masks_np is None:
         out = np.zeros((height, width), dtype=np.float32)
     else:
@@ -84,15 +73,7 @@ def binary_mask_tensor(masks_np, height: int, width: int):
 # -----------------------------------------
 
 class SAM3_TextToVideoMask:
-    """
-    Use SAM3Video with a text prompt to get a mask per frame.
-    Inputs:
-      - images: IMAGE batch [B,H,W,C] (video frames)
-      - text: text describing the object
-      - threshold: probability threshold for binarization
-    Output:
-      - MASK batch [B,1,H,W] in 0–1
-    """
+    """Use SAM3Video with a text prompt to get a mask per frame."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -121,12 +102,11 @@ class SAM3_TextToVideoMask:
     def run(self, images, text, threshold):
         device = mm.get_torch_device()
 
-        # Convert ComfyUI IMAGE batch to PIL frames
         frames = to_pil_frames(images)
         num_frames = len(frames)
         if num_frames == 0:
-            # Empty batch – return zero mask matching spatial dimensions
-            return (torch.zeros_like(images[:, :, :, 0:1]).permute(0, 3, 1, 2),)
+            # Empty batch – return zero mask matching spatial dims
+            return (torch.zeros_like(images[:, :, :, 0]),)
 
         height = frames[0].height
         width = frames[0].width
@@ -162,7 +142,6 @@ class SAM3_TextToVideoMask:
             if masks is None or masks.shape[0] == 0:
                 masks_per_frame[t] = None
             else:
-                # Convert to uint8 0/255 for union helper
                 m_bin = (masks > threshold).cpu().numpy().astype("uint8") * 255
                 masks_per_frame[t] = m_bin
 
@@ -173,6 +152,7 @@ class SAM3_TextToVideoMask:
             mask_batch.append(m_tensor)
 
         mask_batch = torch.stack(mask_batch, dim=0)  # [B,1,H,W]
+        mask_batch = mask_batch[:, 0, :, :]          # [B,H,W]
         mask_batch = mask_batch.clamp(0, 1)
 
         return (mask_batch,)
@@ -183,16 +163,7 @@ class SAM3_TextToVideoMask:
 # -----------------------------------------
 
 class SAM3_PointToVideoMask:
-    """
-    Use SAM3TrackerVideo with a single point click to track an object.
-    Inputs:
-      - images: IMAGE batch [B,H,W,C]
-      - x, y: click coordinates in pixels on the annotation frame
-      - ann_frame_idx: index of frame where you clicked (0-based)
-      - threshold: probability threshold for binarization
-    Output:
-      - MASK batch [B,1,H,W] tracking the object
-    """
+    """Use SAM3TrackerVideo with a single point click to track an object."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -226,7 +197,7 @@ class SAM3_PointToVideoMask:
         frames = to_pil_frames(images)
         num_frames = len(frames)
         if num_frames == 0:
-            return (torch.zeros_like(images[:, :, :, 0:1]).permute(0, 3, 1, 2),)
+            return (torch.zeros_like(images[:, :, :, 0]),)
 
         ann_frame_idx = int(max(0, min(num_frames - 1, ann_frame_idx)))
         height = frames[0].height
@@ -293,6 +264,7 @@ class SAM3_PointToVideoMask:
             mask_batch.append(m_tensor)
 
         mask_batch = torch.stack(mask_batch, dim=0)  # [B,1,H,W]
+        mask_batch = mask_batch[:, 0, :, :]          # [B,H,W]
         mask_batch = mask_batch.clamp(0, 1)
 
         return (mask_batch,)
